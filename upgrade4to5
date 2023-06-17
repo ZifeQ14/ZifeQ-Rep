@@ -1,0 +1,117 @@
+#!/bin/bash
+#
+# shellcheck disable=SC1090,SC1091,SC1117,SC2016,SC2046,SC2086
+#
+# Copyright (c) 2019-2020 OpenMediaVault Plugin Developers
+#
+# This file is licensed under the terms of the GNU General Public
+# License version 2. This program is licensed "as is" without any
+# warranty of any kind, whether express or implied.
+#
+# version: 1.1.0
+#
+
+if [[ $(id -u) -ne 0 ]]; then
+  echo "This script must be executed as root or using sudo."
+  exit 99
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+export APT_LISTCHANGES_FRONTEND=none
+export LANG=C.UTF-8
+
+declare -i failed=0
+
+mkconf="/usr/sbin/omv-mkconf"
+plugins="cups dnsmasq docker-gui domoticz duplicati eyefi ldap letsencrypt mysql nginx openvpn pxe remotedesktop route shellinabox syncthing transmissionbt urbackup-server vdo virtualbox webdav netatalk route mumble vdr vdr-extras vdr-vnsiserver"
+
+if [ ! -f "${mkconf}" ]; then
+  echo "Creating omv-mkconf to help remove plugins"
+  echo "exit 0" > ${mkconf}
+  chmod +x ${mkconf}
+fi
+
+echo "Purging incompatible plugins ..."
+for plugin in ${plugins}; do
+  pkg="openmediavault-${plugin}"
+  if dpkg --list | grep --quiet "${pkg}"; then
+    if apt-get --yes purge ${pkg}; then
+      echo "Successfully removed '${pkg}'."
+    else
+      echo "Failed to remove '${pkg}'."
+      failed=1
+    fi
+  fi
+done
+
+if [ -f "${mkconf}" ]; then
+  rm ${mkconf}
+fi
+
+if [ ${failed} -eq 1 ]; then
+  echo "Failed to remove a plugin.  Exiting..."
+  exit 1
+fi
+
+echo "Changing sources ..."
+sed -i "s/stretch/buster/g" /etc/apt/sources.list
+sed -i "s/stretch/buster/g" /etc/apt/sources.list.d/*
+sed -i "s/arrakis/usul/g" /etc/apt/sources.list.d/*
+for list in /etc/apt/sources.list.d/omvextras.list /etc/apt/sources.list.d/omv-extras-org.list; do
+  if [ -f "${list}" ]; then
+    sed -i "/[Dd]ocker/d" ${list}
+  fi
+done
+
+echo "Applying mtu fix ..."
+sed -i "s/<mtu><\/mtu>/<mtu>0<\/mtu>/g" /etc/openmediavault/config.xml
+
+if [ -f /etc/apt/apt.conf ]; then
+  echo "Changing apt.conf ..."
+  sed -i "s/stretch/buster/g" /etc/apt/apt.conf
+fi
+
+echo "Removing Packages archive file ..."
+rm -f /var/cache/openmediavault/archives/Packages
+
+armbian="/etc/apt/sources.list.d/armbian.list"
+if [ -f "${armbian}" ]; then
+  echo "Fixing Armbian repo ..."
+  echo "deb http://apt.armbian.com buster main buster-utils" | sudo tee ${armbian}
+fi
+
+echo 'Debian GNU/Linux 10 \n \l' > /etc/issue
+
+echo "Running apt-get update ..."
+apt-get update
+
+echo "Updating base-files ..."
+apt-get --option DPkg::Options::="--force-confnew" install base-files
+
+echo "Running apt-get dist-upgrade ..."
+apt-get --yes \
+        --option DPkg::Options::="--force-confdef" \
+        --option DPkg::Options::="--force-confold" \
+        dist-upgrade
+
+arch="$(dpkg --print-architecture)"
+rule="/etc/udev/rules.d/80-net-setup-link.rules"
+
+if [ ! "${arch}" = "amd64" ] && [ ! "${arch}" = "i386" ]; then
+  echo "Disable predictive network device naming ..."
+  rm -fv ${rule}
+  ln -s /dev/null ${rule}
+fi
+
+echo "Reboot now."
+echo ""
+echo "Then run:"
+echo "  apt-get purge openmediavault-omvextrasorg resolvconf"
+echo "  wget -O - https://github.com/OpenMediaVault-Plugin-Developers/packages/raw/master/install | bash"
+echo "  apt-get update"
+echo "  apt-get dist-upgrade"
+echo ""
+echo "  omv-salt deploy run nginx"
+echo "  omv-salt deploy run phpfpm"
+echo ""
+echo "https://forum.openmediavault.org/index.php?thread/27909-omv-5-0-finally-out/&postID=219830#post219830"
